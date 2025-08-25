@@ -1,4 +1,3 @@
-# ---------- builder ----------
 FROM ghcr.io/astral-sh/uv:bookworm-slim AS builder
 
 ENV UV_COMPILE_BYTECODE=1 \
@@ -6,39 +5,38 @@ ENV UV_COMPILE_BYTECODE=1 \
     UV_PYTHON_INSTALL_DIR=/python \
     UV_PYTHON_PREFERENCE=only-managed
 
-# Dipendenze di build (git serve per uv-dynamic-versioning)
+RUN git init && \
+    git config user.email "builder@example.com" && \
+    git config user.name "builder" && \
+    git add . && \
+    git commit -m "docker build" && \
+    git tag v0.1.0
+
+# Install build dependencies and clean up in the same layer
 RUN apt-get update -y && \
     apt-get install --no-install-recommends -y clang git && \
     rm -rf /var/lib/apt/lists/*
 
-# Installa Python prima del progetto per massimizzare la cache
+# Install Python before the project for caching
 RUN uv python install 3.13
 
 WORKDIR /app
-
-# Prime dipendenze da lock senza installare il progetto (cache più stabile)
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
     uv sync --frozen --no-install-project --no-dev
-
-# Porta dentro le sorgenti
 COPY . /app
-
-# **FIX**: monta anche .git così hatch/uv-dynamic-versioning vede i tag/commit
 RUN --mount=type=cache,target=/root/.cache/uv \
-    --mount=type=bind,source=.git,target=/app/.git,readonly \
     uv sync --frozen --no-dev
 
-
-# ---------- runtime ----------
 FROM debian:bookworm-slim AS runtime
 
-# VNC password da secret con fallback
+# VNC password will be read from Docker secrets or fallback to default
+# Create a fallback default password file
 RUN mkdir -p /run/secrets && \
     echo "browser-use" > /run/secrets/vnc_password_default
 
-# Pacchetti runtime + pulizia
+# Install required packages including Chromium and clean up in the same layer
 RUN apt-get update && \
     apt-get install --no-install-recommends -y \
     xfce4 \
@@ -60,11 +58,10 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/* && \
     rm -rf /var/cache/apt/*
 
-# Copia solo ciò che serve dal builder
+# Copy only necessary files from builder
 COPY --from=builder /python /python
 COPY --from=builder /app /app
-
-# Permessi
+# Set proper permissions
 RUN chmod -R 755 /python /app
 
 ENV ANONYMIZED_TELEMETRY=false \
@@ -73,14 +70,13 @@ ENV ANONYMIZED_TELEMETRY=false \
     CHROME_BIN=/usr/bin/chromium \
     CHROMIUM_FLAGS="--no-sandbox --headless --disable-gpu --disable-software-rasterizer --disable-dev-shm-usage"
 
-# Setup VNC + boot script
+# Combine VNC setup commands to reduce layers
 RUN mkdir -p ~/.vnc && \
     printf '#!/bin/sh\nunset SESSION_MANAGER\nunset DBUS_SESSION_BUS_ADDRESS\nstartxfce4' > /root/.vnc/xstartup && \
     chmod +x /root/.vnc/xstartup && \
-    printf '#!/bin/bash\n\n# Usa secret se presente, altrimenti fallback\nif [ -f "/run/secrets/vnc_password" ]; then\n  cat /run/secrets/vnc_password | vncpasswd -f > /root/.vnc/passwd\nelse\n  cat /run/secrets/vnc_password_default | vncpasswd -f > /root/.vnc/passwd\nfi\n\nchmod 600 /root/.vnc/passwd\nvncserver -depth 24 -geometry 1920x1080 -localhost no -PasswordFile /root/.vnc/passwd :0\nproxy-login-automator\npython /app/server --port 8000' > /app/boot.sh && \
+    printf '#!/bin/bash\n\n# Use Docker secret for VNC password if available, else fallback to default\nif [ -f "/run/secrets/vnc_password" ]; then\n  cat /run/secrets/vnc_password | vncpasswd -f > /root/.vnc/passwd\nelse\n  cat /run/secrets/vnc_password_default | vncpasswd -f > /root/.vnc/passwd\nfi\n\nchmod 600 /root/.vnc/passwd\nvncserver -depth 24 -geometry 1920x1080 -localhost no -PasswordFile /root/.vnc/passwd :0\nproxy-login-automator\npython /app/server --port 8000' > /app/boot.sh && \
     chmod +x /app/boot.sh
 
-# (Opzionale) Playwright: assicurati che il binario/CLI sia presente nel PATH
 RUN playwright install --with-deps --no-shell chromium
 
 EXPOSE 8000
