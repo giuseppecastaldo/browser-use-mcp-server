@@ -5,13 +5,6 @@ ENV UV_COMPILE_BYTECODE=1 \
     UV_PYTHON_INSTALL_DIR=/python \
     UV_PYTHON_PREFERENCE=only-managed
 
-RUN git init && \
-    git config user.email "builder@example.com" && \
-    git config user.name "builder" && \
-    git add . && \
-    git commit -m "docker build" && \
-    git tag v0.1.0
-
 # Install build dependencies and clean up in the same layer
 RUN apt-get update -y && \
     apt-get install --no-install-recommends -y clang git && \
@@ -26,6 +19,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
     uv sync --frozen --no-install-project --no-dev
 COPY . /app
+COPY .git /app/.git
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev
 
